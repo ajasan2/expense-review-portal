@@ -1,0 +1,21 @@
+employee_id,full_name,email,department,job_title,role,manager_id,location,hire_date,home_office_spent_ytd_usd
+E001,Diane Okafor,diane.okafor@halcyonlogistics.com,Executive,Chief Executive Officer,executive,,Chicago,2015-03-02,0.00
+E002,Marcus Lee,marcus.lee@halcyonlogistics.com,Finance,Chief Financial Officer,executive,E001,Chicago,2017-06-12,0.00
+E003,Priya Raman,priya.raman@halcyonlogistics.com,Engineering,VP of Engineering,director,E001,Chicago,2018-01-08,310.00
+E004,Tom Becker,tom.becker@halcyonlogistics.com,Sales,VP of Sales,director,E001,Chicago,2016-09-19,0.00
+E005,Laura Chen,laura.chen@halcyonlogistics.com,Engineering,Engineering Manager,manager,E003,Chicago,2019-04-15,125.00
+E006,Javier Morales,javier.morales@halcyonlogistics.com,Operations,Operations Manager,manager,E002,Rockford,2018-11-05,0.00
+E007,Hannah Whitfield,hannah.whitfield@halcyonlogistics.com,Sales,Sales Manager,manager,E004,Chicago,2020-02-10,0.00
+E008,Sam Patel,sam.patel@halcyonlogistics.com,Engineering,Software Engineer,employee,E005,Chicago,2023-07-17,0.00
+E009,Grace Kim,grace.kim@halcyonlogistics.com,Engineering,Senior Software Engineer,employee,E005,Remote - Austin,2021-05-24,415.00
+E010,Owen Brooks,owen.brooks@halcyonlogistics.com,Engineering,Software Engineer,employee,E005,Chicago,2025-08-04,0.00
+E011,Fatima Haddad,fatima.haddad@halcyonlogistics.com,Sales,Account Executive,employee,E007,Chicago,2022-03-28,0.00
+E012,Ryan O'Connell,ryan.oconnell@halcyonlogistics.com,Sales,Account Executive,employee,E007,Chicago,2021-10-11,90.00
+E013,Mei Tanaka,mei.tanaka@halcyonlogistics.com,Sales,Sales Development Representative,employee,E007,New York,2024-06-03,0.00
+E014,Carlos Rivera,carlos.rivera@halcyonlogistics.com,Operations,Logistics Coordinator,employee,E006,Rockford,2022-09-12,220.00
+E015,Nina Alvarez,nina.alvarez@halcyonlogistics.com,Operations,Operations Analyst,employee,E006,Chicago,2023-02-06,0.00
+E016,Ben Foster,ben.foster@halcyonlogistics.com,Finance,Financial Analyst,employee,E002,Chicago,2024-01-22,0.00
+E017,Aisha Mohammed,aisha.mohammed@halcyonlogistics.com,Marketing,Marketing Manager,manager,E004,Chicago,2020-07-27,0.00
+E018,Leo Novak,leo.novak@halcyonlogistics.com,Marketing,Content Strategist,employee,E017,Chicago,2025-01-13,0.00
+E019,Zoe Martin,zoe.martin@halcyonlogistics.com,People,HR Generalist,employee,E002,Chicago,2023-10-02,0.00
+E020,Daniel Wright,daniel.wright@halcyonlogistics.com,Sales,Field Sales Representative,employee,E007,Remote - Denver,2022-05-16,480.00
