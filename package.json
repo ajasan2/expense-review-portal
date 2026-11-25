@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@google/genai": "^3.6.1",
+    "csv-parse": "^7.0.3",
+    "dotenv": "^18.0.10",
     "next": "16.4.6",
     "pg": "^8.23.1",
     "postgres": "^4.1.1",
