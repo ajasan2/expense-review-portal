@@ -279,3 +279,158 @@ export async function upsertExpenseReview(input: {
 
   return mapReview(rows[0]);
 }
+
+// Fetch a single expense with employee, approver, and review context
+export async function getExpenseWithContextById(
+  expenseId: string
+): Promise<ExpenseWithContext | null> {
+  const rows = await sql<
+    Array<{
+      expense: ExpenseDbRow;
+      employee: EmployeeDbRow;
+      approver: EmployeeDbRow | null;
+      review: ReviewDbRow | null;
+    }>
+  >`
+    SELECT
+      to_jsonb(e) AS expense,
+      to_jsonb(emp) AS employee,
+      CASE WHEN app.employee_id IS NOT NULL THEN to_jsonb(app) ELSE NULL END AS approver,
+      CASE WHEN rev.id IS NOT NULL THEN to_jsonb(rev) ELSE NULL END AS review
+    FROM expenses e
+    JOIN employees emp ON emp.employee_id = e.employee_id
+    LEFT JOIN employees app ON app.employee_id = e.approver_id
+    LEFT JOIN expense_reviews rev ON rev.expense_id = e.expense_id
+    WHERE e.expense_id = ${expenseId}
+    LIMIT 1
+  `;
+
+  const r = rows[0];
+  if (!r) return null;
+
+  return {
+    expense: mapExpense(r.expense),
+    employee: mapEmployee(r.employee),
+    approver: r.approver ? mapEmployee(r.approver) : null,
+    review: r.review ? mapReview(r.review) : null,
+  };
+}
+
+// Insert a new expense record and return the normalized Expense row
+export async function insertExpense(input: {
+  expense_id?: string;
+  employee_id: string;
+  expense_date: string;
+  submitted_date: string;
+  category: string;
+  merchant: string;
+  amount_usd: number;
+  city: string;
+  receipt_attached: boolean;
+  attendees: string | null;
+  description: string;
+  status: ExpenseStatus;
+  approver_id: string | null;
+  decided_date: string | null;
+  decision_comment: string | null;
+}): Promise<Expense> {
+  const expenseId =
+    input.expense_id ??
+    `EXP-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 90 + 10)}`;
+
+  const rows = await sql<ExpenseDbRow[]>`
+    INSERT INTO expenses (
+      expense_id,
+      employee_id,
+      expense_date,
+      submitted_date,
+      category,
+      merchant,
+      amount_usd,
+      city,
+      receipt_attached,
+      attendees,
+      description,
+      status,
+      approver_id,
+      decided_date,
+      decision_comment
+    ) VALUES (
+      ${expenseId},
+      ${input.employee_id},
+      ${input.expense_date},
+      ${input.submitted_date},
+      ${input.category},
+      ${input.merchant},
+      ${input.amount_usd},
+      ${input.city},
+      ${input.receipt_attached},
+      ${input.attendees},
+      ${input.description},
+      ${input.status},
+      ${input.approver_id},
+      ${input.decided_date},
+      ${input.decision_comment}
+    )
+    RETURNING
+      expense_id,
+      employee_id,
+      expense_date::text AS expense_date,
+      submitted_date::text AS submitted_date,
+      category,
+      merchant,
+      amount_usd,
+      city,
+      receipt_attached,
+      attendees,
+      description,
+      status,
+      approver_id,
+      decided_date::text AS decided_date,
+      decision_comment,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+  `;
+
+  return mapExpense(rows[0]);
+}
+
+// Update approval/rejection status and decision metadata for an expense
+export async function updateExpenseStatus(input: {
+  expense_id: string;
+  approver_id: string;
+  status: Extract<ExpenseStatus, "approved" | "rejected">;
+  decided_date: string;
+  decision_comment: string | null;
+}): Promise<Expense | null> {
+  const rows = await sql<ExpenseDbRow[]>`
+    UPDATE expenses
+    SET
+      status = ${input.status},
+      approver_id = ${input.approver_id},
+      decided_date = ${input.decided_date},
+      decision_comment = ${input.decision_comment},
+      updated_at = NOW()
+    WHERE expense_id = ${input.expense_id}
+    RETURNING
+      expense_id,
+      employee_id,
+      expense_date::text AS expense_date,
+      submitted_date::text AS submitted_date,
+      category,
+      merchant,
+      amount_usd,
+      city,
+      receipt_attached,
+      attendees,
+      description,
+      status,
+      approver_id,
+      decided_date::text AS decided_date,
+      decision_comment,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+  `;
+
+  return rows[0] ? mapExpense(rows[0]) : null;
+}
