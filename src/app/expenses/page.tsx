@@ -1,42 +1,25 @@
-// Employee expense submission form and personal expense list
+// src/app/expenses/page.tsx: Session-authenticated expense submission and personal list
 
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import {
-  getEmployeeById,
-  listEmployees,
-  listExpensesForEmployee,
-} from "@/lib/db/queries";
+import { getCurrentEmployee } from "@/lib/auth/session";
+import { isApproverRole } from "@/lib/auth/permissions";
+import { listExpensesForEmployee } from "@/lib/db/queries";
 import { createExpenseAction } from "./actions";
 
-async function ExpensesContent({
-  searchParams,
-}: {
-  searchParams: Promise<{ employeeId?: string }>;
-}) {
-  const { employeeId } = await searchParams;
-  const employees = await listEmployees();
-
-  const selectedEmployee =
-    (employeeId ? await getEmployeeById(employeeId) : null) ??
-    employees.find((e) => e.role === "employee") ??
-    employees[0];
-
-  if (!selectedEmployee) {
-    return (
-      <p className="text-sm text-neutral-600">
-        No employees found in the database. Run your seed script first.
-      </p>
-    );
+async function ExpensesContent() {
+  const actor = await getCurrentEmployee();
+  if (!actor) {
+    redirect("/");
   }
 
-  const items = await listExpensesForEmployee(selectedEmployee.employee_id);
+  const items = await listExpensesForEmployee(actor.employee_id);
   const todayIso = new Date().toISOString().slice(0, 10);
+  const canAccessQueue = isApproverRole(actor);
 
   async function handleSubmitExpense(formData: FormData) {
     "use server";
-    const empId = String(formData.get("employee_id") ?? "");
     const expenseDate = String(formData.get("expense_date") ?? "");
     const submittedDate = String(formData.get("submitted_date") ?? todayIso);
     const category = String(formData.get("category") ?? "");
@@ -48,7 +31,6 @@ async function ExpensesContent({
     const description = String(formData.get("description") ?? "");
 
     const res = await createExpenseAction({
-      employee_id: empId,
       expense_date: expenseDate,
       submitted_date: submittedDate,
       category,
@@ -61,9 +43,7 @@ async function ExpensesContent({
     });
 
     if (res.ok && res.expense) {
-      redirect(
-        `/expenses/${res.expense.expense_id}?employeeId=${encodeURIComponent(empId)}`
-      );
+      redirect(`/expenses/${res.expense.expense_id}`);
     }
   }
 
@@ -73,56 +53,25 @@ async function ExpensesContent({
         <div>
           <h1 className="text-2xl font-semibold">My Expenses</h1>
           <p className="text-sm text-neutral-600">
-            {selectedEmployee.full_name} · {selectedEmployee.department} ·{" "}
-            {selectedEmployee.location} · Home Office YTD: $
-            {selectedEmployee.home_office_spent_ytd_usd.toFixed(2)} / $500.00
+            {actor.full_name} · {actor.department} · {actor.location} · Home
+            Office YTD: ${actor.home_office_spent_ytd_usd.toFixed(2)} / $500.00
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <form method="GET" className="flex items-center gap-2">
-            <label htmlFor="employeeId" className="text-xs text-neutral-500">
-              Viewing as:
-            </label>
-            <select
-              id="employeeId"
-              name="employeeId"
-              defaultValue={selectedEmployee.employee_id}
-              className="rounded-md border px-2.5 py-1.5 text-sm"
-            >
-              {employees.map((emp) => (
-                <option key={emp.employee_id} value={emp.employee_id}>
-                  {emp.full_name} ({emp.role})
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              className="rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-neutral-50"
-            >
-              Switch
-            </button>
-          </form>
-
+        {canAccessQueue && (
           <Link
             href="/manager"
             className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-neutral-50"
           >
             Approver Queue →
           </Link>
-        </div>
+        )}
       </header>
 
       <section className="space-y-4 rounded-lg border p-5">
         <h2 className="text-lg font-semibold">Submit New Expense</h2>
 
         <form action={handleSubmitExpense} className="grid gap-4 sm:grid-cols-2">
-          <input
-            type="hidden"
-            name="employee_id"
-            value={selectedEmployee.employee_id}
-          />
-
           <div>
             <label className="block text-xs font-medium uppercase text-neutral-600">
               Category
@@ -255,7 +204,7 @@ async function ExpensesContent({
 
         {items.length === 0 ? (
           <p className="rounded-lg border p-4 text-sm text-neutral-600">
-            No expenses submitted for {selectedEmployee.full_name} yet.
+            No expenses submitted for {actor.full_name} yet.
           </p>
         ) : (
           <div className="overflow-x-auto rounded-lg border">
@@ -310,17 +259,13 @@ async function ExpensesContent({
   );
 }
 
-export default function ExpensesPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ employeeId?: string }>;
-}) {
+export default function ExpensesPage() {
   return (
     <main className="mx-auto max-w-5xl p-6">
       <Suspense
         fallback={<p className="text-sm text-neutral-600">Loading expenses...</p>}
       >
-        <ExpensesContent searchParams={searchParams} />
+        <ExpensesContent />
       </Suspense>
     </main>
   );

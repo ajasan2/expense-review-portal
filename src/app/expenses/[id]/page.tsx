@@ -1,9 +1,15 @@
-// Expense detail view with policy/llm audit findings and decision controls
+// Expense detail view with session auth, permission checks, policy/AI audit findings, and decision controls
 
 import { Suspense } from "react";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { getExpenseWithContextById, listEmployees } from "@/lib/db/queries";
+import { notFound, redirect } from "next/navigation";
+import { getCurrentEmployee } from "@/lib/auth/session";
+import {
+  canDecideExpense,
+  canRunExpenseReview,
+  canViewExpense,
+} from "@/lib/auth/permissions";
+import { getExpenseWithContextById } from "@/lib/db/queries";
 import { decideExpenseAction, runExpenseReviewAction } from "../actions";
 
 async function ExpenseDetailContent({
@@ -11,6 +17,11 @@ async function ExpenseDetailContent({
 }: {
   params: Promise<{ id: string }>;
 }) {
+  const actor = await getCurrentEmployee();
+  if (!actor) {
+    redirect("/");
+  }
+
   const { id } = await params;
   const ctx = await getExpenseWithContextById(id);
 
@@ -18,14 +29,29 @@ async function ExpenseDetailContent({
     notFound();
   }
 
-  const employees = await listEmployees();
-  const approvers = employees.filter(
-    (emp) =>
-      emp.employee_id !== ctx.expense.employee_id &&
-      (emp.role === "manager" || emp.role === "director" || emp.role === "executive")
-  );
-  const defaultApproverId =
-    ctx.expense.approver_id ?? approvers[0]?.employee_id ?? "";
+  const { expense, employee, approver, review } = ctx;
+
+  if (!canViewExpense(actor, expense, employee.manager_id)) {
+    return (
+      <div className="space-y-4 rounded-lg border p-6">
+        <Link
+          href="/expenses"
+          className="text-sm text-neutral-500 hover:underline"
+        >
+          ← Back to Expenses
+        </Link>
+        <h1 className="text-xl font-semibold">Not Authorized</h1>
+        <p className="text-sm text-neutral-600">
+          You do not have permission to view expense {expense.expense_id}.
+        </p>
+      </div>
+    );
+  }
+
+  const allowedToDecide = canDecideExpense(actor, expense, employee.manager_id);
+  const allowedToRunReview =
+    canRunExpenseReview(actor) &&
+    canViewExpense(actor, expense, employee.manager_id);
 
   async function handleRunReview() {
     "use server";
@@ -34,7 +60,6 @@ async function ExpenseDetailContent({
 
   async function handleDecision(formData: FormData) {
     "use server";
-    const approverId = String(formData.get("approver_id") ?? "");
     const status = String(formData.get("status") ?? "");
     const commentRaw = String(formData.get("decision_comment") ?? "").trim();
 
@@ -42,13 +67,10 @@ async function ExpenseDetailContent({
 
     await decideExpenseAction({
       expense_id: id,
-      approver_id: approverId,
       status,
       decision_comment: commentRaw.length > 0 ? commentRaw : null,
     });
   }
-
-  const { expense, employee, approver, review } = ctx;
 
   return (
     <div className="space-y-6">
@@ -69,14 +91,16 @@ async function ExpenseDetailContent({
           </p>
         </div>
 
-        <form action={handleRunReview}>
-          <button
-            type="submit"
-            className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-neutral-50"
-          >
-            Run / Re-run Policy Review
-          </button>
-        </form>
+        {allowedToRunReview && (
+          <form action={handleRunReview}>
+            <button
+              type="submit"
+              className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-neutral-50"
+            >
+              Run / Re-run Policy Review
+            </button>
+          </form>
+        )}
       </div>
 
       <section className="grid gap-4 rounded-lg border p-4 sm:grid-cols-3">
@@ -128,9 +152,7 @@ async function ExpenseDetailContent({
 
       <section className="space-y-3 rounded-lg border p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">
-            Policy &amp; AI Audit Review
-          </h2>
+          <h2 className="text-lg font-semibold">Policy &amp; AI Audit Review</h2>
           {review && (
             <span className="rounded bg-neutral-100 px-2.5 py-1 text-xs font-medium uppercase">
               Verdict: {review.verdict.replace("_", " ")}
@@ -191,68 +213,48 @@ async function ExpenseDetailContent({
         )}
       </section>
 
-      <section className="space-y-3 rounded-lg border p-4">
-        <h2 className="text-lg font-semibold">Record Approval Decision</h2>
-        {expense.status !== "pending" && (
-          <p className="text-sm text-neutral-600">
-            Current status: <strong className="capitalize">{expense.status}</strong>
-            {expense.decided_date ? ` on ${expense.decided_date}` : ""}
-            {expense.decision_comment ? ` — "${expense.decision_comment}"` : ""}
+      {allowedToDecide && (
+        <section className="space-y-3 rounded-lg border p-4">
+          <h2 className="text-lg font-semibold">Record Approval Decision</h2>
+          <p className="text-xs text-neutral-500">
+            Acting as {actor.full_name} ({actor.role})
           </p>
-        )}
 
-        <form action={handleDecision} className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium uppercase text-neutral-600">
-              Approver
-            </label>
-            <select
-              name="approver_id"
-              defaultValue={defaultApproverId}
-              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
-              required
-            >
-              {approvers.map((emp) => (
-                <option key={emp.employee_id} value={emp.employee_id}>
-                  {emp.full_name} ({emp.role} · {emp.employee_id})
-                </option>
-              ))}
-            </select>
-          </div>
+          <form action={handleDecision} className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium uppercase text-neutral-600">
+                Decision Comment (Optional)
+              </label>
+              <input
+                type="text"
+                name="decision_comment"
+                defaultValue={expense.decision_comment ?? ""}
+                placeholder="Add rationale or policy note..."
+                className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
+              />
+            </div>
 
-          <div>
-            <label className="block text-xs font-medium uppercase text-neutral-600">
-              Decision Comment (Optional)
-            </label>
-            <input
-              type="text"
-              name="decision_comment"
-              defaultValue={expense.decision_comment ?? ""}
-              placeholder="Add rationale or policy note..."
-              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
-            />
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              type="submit"
-              name="status"
-              value="approved"
-              className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
-            >
-              Approve Expense
-            </button>
-            <button
-              type="submit"
-              name="status"
-              value="rejected"
-              className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-            >
-              Reject Expense
-            </button>
-          </div>
-        </form>
-      </section>
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                name="status"
+                value="approved"
+                className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
+              >
+                Approve Expense
+              </button>
+              <button
+                type="submit"
+                name="status"
+                value="rejected"
+                className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+              >
+                Reject Expense
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
     </div>
   );
 }

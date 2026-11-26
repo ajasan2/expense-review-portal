@@ -1,34 +1,36 @@
-// Pending expense review queue
+// Pending expense review queue guarded by session and approver role
 
 import { Suspense } from "react";
 import Link from "next/link";
-import {
-  getEmployeeById,
-  listEmployees,
-  listPendingExpensesForApprover,
-} from "@/lib/db/queries";
+import { redirect } from "next/navigation";
+import { getCurrentEmployee } from "@/lib/auth/session";
+import { isApproverRole } from "@/lib/auth/permissions";
+import { listPendingExpensesForApprover } from "@/lib/db/queries";
 
-async function ManagerQueueContent({
-  searchParams,
-}: {
-  searchParams: Promise<{ approverId?: string }>;
-}) {
-  const { approverId } = await searchParams;
-  const employees = await listEmployees();
+async function ManagerQueueContent() {
+  const actor = await getCurrentEmployee();
+  if (!actor) {
+    redirect("/");
+  }
 
-  const approvers = employees.filter(
-    (e) =>
-      e.role === "manager" || e.role === "director" || e.role === "executive"
-  );
+  if (!isApproverRole(actor)) {
+    return (
+      <div className="space-y-4 rounded-lg border p-6">
+        <h1 className="text-xl font-semibold">Not Authorized</h1>
+        <p className="text-sm text-neutral-600">
+          Your role ({actor.role}) does not have access to the approver queue.
+        </p>
+        <Link
+          href="/expenses"
+          className="inline-block rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-neutral-50"
+        >
+          ← Back to My Expenses
+        </Link>
+      </div>
+    );
+  }
 
-  const selectedApprover =
-    (approverId ? await getEmployeeById(approverId) : null) ??
-    approvers[0] ??
-    employees[0];
-
-  const queue = selectedApprover
-    ? await listPendingExpensesForApprover(selectedApprover)
-    : [];
+  const queue = await listPendingExpensesForApprover(actor);
 
   return (
     <div className="space-y-6">
@@ -36,52 +38,23 @@ async function ManagerQueueContent({
         <div>
           <h1 className="text-2xl font-semibold">Approver Review Queue</h1>
           <p className="text-sm text-neutral-600">
-            Pending expenses requiring review or decision under Halcyon Policy
-            v3.2
+            Signed in as <strong>{actor.full_name}</strong> ({actor.role}) ·
+            Halcyon Policy v3.2
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <form method="GET" className="flex items-center gap-2">
-            <label htmlFor="approverId" className="text-xs text-neutral-500">
-              Approver:
-            </label>
-            <select
-              id="approverId"
-              name="approverId"
-              defaultValue={selectedApprover?.employee_id ?? ""}
-              className="rounded-md border px-2.5 py-1.5 text-sm"
-            >
-              {employees.map((emp) => (
-                <option key={emp.employee_id} value={emp.employee_id}>
-                  {emp.full_name} ({emp.role})
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              className="rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-neutral-50"
-            >
-              Switch
-            </button>
-          </form>
-
-          <Link
-            href="/expenses"
-            className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-neutral-50"
-          >
-            ← My Expenses
-          </Link>
-        </div>
+        <Link
+          href="/expenses"
+          className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-neutral-50"
+        >
+          ← My Expenses
+        </Link>
       </header>
 
-      {!selectedApprover ? (
-        <p className="text-sm text-neutral-600">No employees found.</p>
-      ) : queue.length === 0 ? (
+      {queue.length === 0 ? (
         <div className="rounded-lg border p-6 text-sm text-neutral-600">
-          No pending expenses in the queue for{" "}
-          <strong>{selectedApprover.full_name}</strong> ({selectedApprover.role}
-          ).
+          No pending expenses in the queue for <strong>{actor.full_name}</strong>{" "}
+          ({actor.role}).
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border">
@@ -145,11 +118,7 @@ async function ManagerQueueContent({
   );
 }
 
-export default function ManagerQueuePage({
-  searchParams,
-}: {
-  searchParams: Promise<{ approverId?: string }>;
-}) {
+export default function ManagerQueuePage() {
   return (
     <main className="mx-auto max-w-5xl p-6">
       <Suspense
@@ -157,7 +126,7 @@ export default function ManagerQueuePage({
           <p className="text-sm text-neutral-600">Loading approver queue...</p>
         }
       >
-        <ManagerQueueContent searchParams={searchParams} />
+        <ManagerQueueContent />
       </Suspense>
     </main>
   );

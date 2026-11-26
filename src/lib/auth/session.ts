@@ -9,7 +9,14 @@ const SESSION_COOKIE_NAME = "halcyon_session";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 function getAuthSecret(): string {
-  return process.env.AUTH_SECRET ?? "dev-only-fallback-secret-change-in-prod";
+  const secret = process.env.AUTH_SECRET;
+  if (secret && secret.length >= 16) {
+    return secret;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("AUTH_SECRET must be set to a strong value in production");
+  }
+  return "dev-only-fallback-secret-change-in-prod";
 }
 
 function signValue(value: string): string {

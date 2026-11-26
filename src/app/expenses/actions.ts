@@ -1,12 +1,13 @@
-// Server Actions for creating expenses, running AI reviews, and recording decisions
+// Session-authenticated Server Actions with server-side permission checks
 
 "use server";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { reviewExpenseWithAi } from "@/lib/llm/review-expense";
+import { requireCurrentEmployee } from "@/lib/auth/session";
+import { canDecideExpense, canRunExpenseReview, canViewExpense } from "@/lib/auth/permissions";
+import { reviewExpenseWithAi } from "@/lib/llm";
 import {
-  getEmployeeById,
   getExpenseWithContextById,
   insertExpense,
   updateExpenseStatus,
@@ -15,7 +16,6 @@ import {
 import type { Expense, ExpenseReview } from "@/types/expense";
 
 const createExpenseSchema = z.object({
-  employee_id: z.string().min(1),
   expense_date: z.string().min(1),
   submitted_date: z.string().min(1),
   category: z.string().min(1),
@@ -29,7 +29,6 @@ const createExpenseSchema = z.object({
 
 const decisionSchema = z.object({
   expense_id: z.string().min(1),
-  approver_id: z.string().min(1),
   status: z.enum(["approved", "rejected"]),
   decision_comment: z.string().nullable().optional(),
 });
@@ -40,6 +39,13 @@ export async function createExpenseAction(rawInput: unknown): Promise<{
   review?: ExpenseReview;
   error?: string;
 }> {
+  let actor;
+  try {
+    actor = await requireCurrentEmployee();
+  } catch {
+    return { ok: false, error: "Authentication required" };
+  }
+
   const parsed = createExpenseSchema.safeParse(rawInput);
   if (!parsed.success) {
     return {
@@ -48,22 +54,17 @@ export async function createExpenseAction(rawInput: unknown): Promise<{
     };
   }
 
-  const employee = await getEmployeeById(parsed.data.employee_id);
-  if (!employee) {
-    return { ok: false, error: "Employee not found" };
-  }
-
   const expense = await insertExpense({
     ...parsed.data,
+    employee_id: actor.employee_id,
     attendees: parsed.data.attendees ?? null,
     status: "pending",
-    approver_id: employee.manager_id,
+    approver_id: actor.manager_id,
     decided_date: null,
     decision_comment: null,
   });
 
-  // Automatically run AI + deterministic policy review on submission
-  const generated = await reviewExpenseWithAi({ expense, employee });
+  const generated = await reviewExpenseWithAi({ expense, employee: actor });
   const review = await upsertExpenseReview(generated);
 
   revalidatePath("/expenses");
@@ -78,9 +79,21 @@ export async function runExpenseReviewAction(expenseId: string): Promise<{
   review?: ExpenseReview;
   error?: string;
 }> {
+  let actor;
+  try {
+    actor = await requireCurrentEmployee();
+  } catch {
+    return { ok: false, error: "Authentication required" };
+  }
+
   const ctx = await getExpenseWithContextById(expenseId);
   if (!ctx) {
     return { ok: false, error: "Expense not found" };
+  }
+
+  const submitterManagerId = ctx.employee?.manager_id ?? null;
+  if (!canRunExpenseReview(actor) || !canViewExpense(actor, ctx.expense, submitterManagerId)) {
+    return { ok: false, error: "Only approvers can run or re-run policy reviews" };
   }
 
   const generated = await reviewExpenseWithAi({
@@ -100,6 +113,13 @@ export async function decideExpenseAction(rawInput: unknown): Promise<{
   ok: boolean;
   error?: string;
 }> {
+  let actor;
+  try {
+    actor = await requireCurrentEmployee();
+  } catch {
+    return { ok: false, error: "Authentication required" };
+  }
+
   const parsed = decisionSchema.safeParse(rawInput);
   if (!parsed.success) {
     return {
@@ -113,16 +133,17 @@ export async function decideExpenseAction(rawInput: unknown): Promise<{
     return { ok: false, error: "Expense not found" };
   }
 
-  if (parsed.data.approver_id === ctx.expense.employee_id) {
+  const submitterManagerId = ctx.employee?.manager_id ?? null;
+  if (!canDecideExpense(actor, ctx.expense, submitterManagerId)) {
     return {
       ok: false,
-      error: "Employees cannot approve or reject their own expense",
+      error: "Not authorized to approve or reject this expense",
     };
   }
 
   await updateExpenseStatus({
     expense_id: parsed.data.expense_id,
-    approver_id: parsed.data.approver_id,
+    approver_id: actor.employee_id,
     status: parsed.data.status,
     decided_date: new Date().toISOString().slice(0, 10),
     decision_comment: parsed.data.decision_comment ?? null,

@@ -2,15 +2,11 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { getCurrentEmployee } from "@/lib/auth/session";
 import { reviewExpenseWithAi } from "@/lib/llm";
-import {
-  getEmployeeById,
-  insertExpense,
-  upsertExpenseReview,
-} from "@/lib/db/queries";
+import { insertExpense, upsertExpenseReview } from "@/lib/db/queries";
 
 const postExpenseSchema = z.object({
-  employee_id: z.string().min(1),
   expense_date: z.string().min(1),
   submitted_date: z.string().min(1),
   category: z.string().min(1),
@@ -24,6 +20,14 @@ const postExpenseSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const actor = await getCurrentEmployee();
+    if (!actor) {
+      return NextResponse.json(
+        { error: "Authentication required" },
+        { status: 401 }
+      );
+    }
+
     const body = await request.json();
     const parsed = postExpenseSchema.safeParse(body);
 
@@ -34,20 +38,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const employee = await getEmployeeById(parsed.data.employee_id);
-    if (!employee) {
-      return NextResponse.json({ error: "Employee not found" }, { status: 404 });
-    }
-
     const expense = await insertExpense({
       ...parsed.data,
+      employee_id: actor.employee_id,
       status: "pending",
-      approver_id: employee.manager_id,
+      approver_id: actor.manager_id,
       decided_date: null,
       decision_comment: null,
     });
 
-    const generated = await reviewExpenseWithAi({ expense, employee });
+    const generated = await reviewExpenseWithAi({ expense, employee: actor });
     const review = await upsertExpenseReview(generated);
 
     return NextResponse.json({ expense, review }, { status: 201 });

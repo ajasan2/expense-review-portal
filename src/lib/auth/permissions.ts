@@ -10,6 +10,10 @@ export function isApproverRole(employee: Employee): boolean {
   );
 }
 
+export function canRunExpenseReview(actor: Employee): boolean {
+  return isApproverRole(actor);
+}
+
 // Employees can view their own expenses; assigned/reporting approvers can view items in their queue
 export function canViewExpense(
   actor: Employee,
