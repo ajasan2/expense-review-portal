@@ -1,7 +1,7 @@
-// src/app/api/expenses/[id]/review/route.ts: Trigger policy + Gemini review for a single expense
+// Trigger policy + AI review for a single expense
 
 import { NextResponse } from "next/server";
-import { reviewExpenseWithGemini } from "@/lib/llm";
+import { reviewExpenseWithAi } from "@/lib/llm";
 import {
   getExpenseWithContextById,
   upsertExpenseReview,
@@ -19,7 +19,7 @@ export async function POST(
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
     }
 
-    const generated = await reviewExpenseWithGemini({
+    const generated = await reviewExpenseWithAi({
       expense: ctx.expense,
       employee: ctx.employee,
     });

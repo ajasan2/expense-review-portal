@@ -1,10 +1,10 @@
-// Server Actions for creating expenses, running reviews, and recording decisions
+// Server Actions for creating expenses, running AI reviews, and recording decisions
 
 "use server";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { reviewExpenseWithGemini } from "@/lib/llm";
+import { reviewExpenseWithAi } from "@/lib/llm/review-expense";
 import {
   getEmployeeById,
   getExpenseWithContextById,
@@ -62,7 +62,8 @@ export async function createExpenseAction(rawInput: unknown): Promise<{
     decision_comment: null,
   });
 
-  const generated = await reviewExpenseWithGemini({ expense, employee });
+  // Automatically run AI + deterministic policy review on submission
+  const generated = await reviewExpenseWithAi({ expense, employee });
   const review = await upsertExpenseReview(generated);
 
   revalidatePath("/expenses");
@@ -82,7 +83,7 @@ export async function runExpenseReviewAction(expenseId: string): Promise<{
     return { ok: false, error: "Expense not found" };
   }
 
-  const generated = await reviewExpenseWithGemini({
+  const generated = await reviewExpenseWithAi({
     expense: ctx.expense,
     employee: ctx.employee,
   });

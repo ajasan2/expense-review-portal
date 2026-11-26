@@ -1,6 +1,5 @@
-// src/lib/llm/review-expense.ts: Gemini structured policy review with deterministic rule grounding
+// AI structured policy review with deterministic grounding & fallback
 
-import { GoogleGenAI, Type, type Schema } from "@google/genai";
 import { evaluateDeterministicPolicy } from "@/lib/policy";
 import type {
   Employee,
@@ -10,15 +9,21 @@ import type {
   ReviewVerdict,
 } from "@/types/expense";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+export const DEFAULT_AI_MODEL = "openai/gpt-oss-120b";
+const GROQ_CHAT_COMPLETIONS_URL =
+  "https://api.groq.com/openai/v1/chat/completions";
 
-export interface GeminiClientLike {
-  models: {
-    generateContent(params: {
-      model: string;
-      contents: string;
-      config?: Record<string, unknown>;
-    }): Promise<{ text?: string }>;
+export interface AiClientLike {
+  chat: {
+    completions: {
+      create(params: Record<string, unknown>): Promise<{
+        choices?: Array<{
+          message?: {
+            content?: string | null;
+          };
+        }>;
+      }>;
+    };
   };
 }
 
@@ -26,46 +31,98 @@ export interface ReviewExpenseInput {
   expense: Expense;
   employee: Employee;
   modelName?: string;
-  client?: GeminiClientLike;
+  client?: AiClientLike;
 }
 
 export interface GeneratedExpenseReview
   extends Omit<ExpenseReview, "id" | "reviewed_at"> {}
 
-const reviewResponseSchema: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    verdict: {
-      type: Type.STRING,
-      enum: ["compliant", "needs_review", "policy_violation"],
-    },
-    reimbursable_amount_usd: {
-      type: Type.NUMBER,
-      nullable: true,
-    },
-    summary: {
-      type: Type.STRING,
-    },
-    findings: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          section: { type: Type.STRING },
-          rule_title: { type: Type.STRING },
-          status: {
-            type: Type.STRING,
-            enum: ["compliant", "needs_review", "policy_violation"],
-          },
-          detail: { type: Type.STRING },
-          reimbursable_amount_usd: { type: Type.NUMBER, nullable: true },
+function createDefaultGroqClient(apiKey: string): AiClientLike {
+  return {
+    chat: {
+      completions: {
+        async create(body) {
+          const response = await fetch(GROQ_CHAT_COMPLETIONS_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            signal: AbortSignal.timeout(15_000),
+            body: JSON.stringify(body),
+          });
+
+          if (!response.ok) {
+            const errText = await response.text().catch(() => "");
+            throw new Error(
+              `Groq API error (${response.status}): ${errText || response.statusText}`
+            );
+          }
+
+          return response.json();
         },
-        required: ["section", "rule_title", "status", "detail"],
       },
     },
-  },
-  required: ["verdict", "reimbursable_amount_usd", "summary", "findings"],
-};
+  };
+}
+
+function extractJsonObject(rawText: string): string {
+  const trimmed = rawText.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    return trimmed;
+  }
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+  return "{}";
+}
+
+function sanitizeFindings(raw: unknown): PolicyFinding[] {
+  if (!Array.isArray(raw)) return [];
+  const validStatuses: ReviewVerdict[] = [
+    "compliant",
+    "needs_review",
+    "policy_violation",
+  ];
+
+  return raw
+    .filter((item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object")
+    )
+    .map((item) => {
+      const status: ReviewVerdict = validStatuses.includes(
+        item.status as ReviewVerdict
+      )
+        ? (item.status as ReviewVerdict)
+        : "needs_review";
+
+      const reimbursable =
+        typeof item.reimbursable_amount_usd === "number" &&
+        Number.isFinite(item.reimbursable_amount_usd)
+          ? item.reimbursable_amount_usd
+          : null;
+
+      return {
+        section:
+          typeof item.section === "string" && item.section.trim()
+            ? item.section.trim()
+            : "Halcyon Policy v3.2",
+        rule_title:
+          typeof item.rule_title === "string" && item.rule_title.trim()
+            ? item.rule_title.trim()
+            : "Policy Observation",
+        status,
+        detail:
+          typeof item.detail === "string" && item.detail.trim()
+            ? item.detail.trim()
+            : "",
+        reimbursable_amount_usd: reimbursable,
+      };
+    })
+    .filter((f) => f.detail.length > 0);
+}
 
 function mergeFindings(
   deterministic: PolicyFinding[],
@@ -109,75 +166,26 @@ function resolveVerdict(
   return "compliant";
 }
 
-export async function reviewExpenseWithGemini({
-  expense,
-  employee,
-  modelName = DEFAULT_GEMINI_MODEL,
-  client,
-}: ReviewExpenseInput): Promise<GeneratedExpenseReview> {
-  const deterministic = evaluateDeterministicPolicy(expense, employee);
+function finalizeReview(params: {
+  expense: Expense;
+  deterministic: ReturnType<typeof evaluateDeterministicPolicy>;
+  llmVerdict: ReviewVerdict;
+  llmFindings: PolicyFinding[];
+  llmReimbursableAmountUsd?: number | null;
+  llmSummary?: string;
+  modelName: string;
+}): GeneratedExpenseReview {
+  const {
+    expense,
+    deterministic,
+    llmVerdict,
+    llmFindings,
+    llmReimbursableAmountUsd,
+    llmSummary,
+    modelName,
+  } = params;
 
-  const ai: GeminiClientLike =
-    client ??
-    (() => {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not set");
-      }
-      return new GoogleGenAI({ apiKey });
-    })();
-
-  const prompt = [
-    "You are an expense compliance reviewer for Halcyon Logistics (Policy v3.2).",
-    "Evaluate the expense against Halcyon policy rules (submission deadlines, $25 receipt rule, attendees & client companies, meal/client caps, alcohol rules, air travel class/advance booking, lodging/per-diem city tiers, ground transport/mileage $0.70/mi, $500 annual home office cap, IT software pre-approval, >$500 conference/training pre-approval, $75 client gift cap, and non-reimbursable items).",
-    "Deterministic rule findings already computed:",
-    JSON.stringify(deterministic.findings),
-    "Employee context:",
-    JSON.stringify({
-      employee_id: employee.employee_id,
-      full_name: employee.full_name,
-      role: employee.role,
-      location: employee.location,
-      home_office_spent_ytd_usd: employee.home_office_spent_ytd_usd,
-    }),
-    "Expense record:",
-    JSON.stringify(expense),
-    "Return a concise summary and any additional policy findings not already listed.",
-  ].join("\n\n");
-
-  const response = await ai.models.generateContent({
-    model: modelName,
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: reviewResponseSchema,
-      temperature: 0.1,
-    },
-  });
-
-  const rawText = response.text ?? "{}";
-  let parsed: {
-    verdict?: ReviewVerdict;
-    reimbursable_amount_usd?: number | null;
-    summary?: string;
-    findings?: PolicyFinding[];
-  } = {};
-
-  try {
-    parsed = JSON.parse(rawText);
-  } catch {
-    parsed = {};
-  }
-
-  const llmFindings = Array.isArray(parsed.findings) ? parsed.findings : [];
   const findings = mergeFindings(deterministic.findings, llmFindings);
-  const llmVerdict: ReviewVerdict =
-    parsed.verdict === "compliant" ||
-    parsed.verdict === "needs_review" ||
-    parsed.verdict === "policy_violation"
-      ? parsed.verdict
-      : deterministic.deterministicVerdict;
-
   const verdict = resolveVerdict(
     deterministic.deterministicVerdict,
     llmVerdict,
@@ -185,8 +193,9 @@ export async function reviewExpenseWithGemini({
   );
 
   let reimbursableAmountUsd: number | null =
-    typeof parsed.reimbursable_amount_usd === "number"
-      ? parsed.reimbursable_amount_usd
+    typeof llmReimbursableAmountUsd === "number" &&
+    Number.isFinite(llmReimbursableAmountUsd)
+      ? llmReimbursableAmountUsd
       : deterministic.suggestedReimbursableAmountUsd;
 
   if (
@@ -208,8 +217,8 @@ export async function reviewExpenseWithGemini({
   }
 
   const summary =
-    typeof parsed.summary === "string" && parsed.summary.trim().length > 0
-      ? parsed.summary.trim()
+    typeof llmSummary === "string" && llmSummary.trim().length > 0
+      ? llmSummary.trim()
       : `Evaluated expense ${expense.expense_id} (${verdict}).`;
 
   return {
@@ -220,4 +229,103 @@ export async function reviewExpenseWithGemini({
     summary,
     model_name: modelName,
   };
+}
+
+export async function reviewExpenseWithAi({
+  expense,
+  employee,
+  modelName = process.env.GROQ_MODEL || DEFAULT_AI_MODEL,
+  client,
+}: ReviewExpenseInput): Promise<GeneratedExpenseReview> {
+  const deterministic = evaluateDeterministicPolicy(expense, employee);
+  const apiKey = process.env.GROQ_API_KEY;
+
+  // Fall back cleanly to deterministic policy findings if no Groq key is configured
+  if (!client && !apiKey) {
+    console.warn("[review-expense] GROQ_API_KEY is missing; using deterministic fallback.");
+    return finalizeReview({
+      expense,
+      deterministic,
+      llmVerdict: deterministic.deterministicVerdict,
+      llmFindings: [],
+      llmReimbursableAmountUsd: deterministic.suggestedReimbursableAmountUsd,
+      llmSummary: `Deterministic Halcyon v3.2 review for ${expense.expense_id} (${deterministic.deterministicVerdict}).`,
+      modelName: "deterministic-fallback",
+    });
+  }
+
+  const groqClient: AiClientLike =
+    client ?? createDefaultGroqClient(apiKey as string);
+
+  const systemPrompt = [
+    "You are an expense compliance reviewer for Halcyon Logistics (Policy v3.2).",
+    "Evaluate the expense against Halcyon policy rules (submission deadlines, $25 receipt rule, attendees & client companies, meal/client caps, alcohol rules, air travel class/advance booking, lodging/per-diem city tiers, ground transport/mileage $0.70/mi, $500 annual home office cap, IT software pre-approval, >$500 conference/training pre-approval, $75 client gift cap, and non-reimbursable items).",
+    "Do not contradict deterministic rule violations or caps.",
+    'Return ONLY valid JSON matching: {"verdict":"compliant"|"needs_review"|"policy_violation","reimbursable_amount_usd":number|null,"summary":string,"findings":[{"section":string,"rule_title":string,"status":"compliant"|"needs_review"|"policy_violation","detail":string,"reimbursable_amount_usd":number|null}]}.',
+  ].join(" ");
+
+  const userPrompt = [
+    "Deterministic rule findings already computed:",
+    JSON.stringify(deterministic.findings),
+    "Employee context:",
+    JSON.stringify({
+      employee_id: employee.employee_id,
+      full_name: employee.full_name,
+      role: employee.role,
+      location: employee.location,
+      home_office_spent_ytd_usd: employee.home_office_spent_ytd_usd,
+    }),
+    "Expense record:",
+    JSON.stringify(expense),
+    "Return a concise summary and any additional policy findings not already listed.",
+  ].join("\n\n");
+
+  try {
+    const completion = await groqClient.chat.completions.create({
+      model: modelName,
+      temperature: 0.1,
+      reasoning_effort: "low",
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const rawText = completion.choices?.[0]?.message?.content ?? "{}";
+    const parsed = JSON.parse(extractJsonObject(rawText)) as {
+      verdict?: ReviewVerdict;
+      reimbursable_amount_usd?: number | null;
+      summary?: string;
+      findings?: unknown;
+    };
+
+    const llmVerdict: ReviewVerdict =
+      parsed.verdict === "compliant" ||
+      parsed.verdict === "needs_review" ||
+      parsed.verdict === "policy_violation"
+        ? parsed.verdict
+        : deterministic.deterministicVerdict;
+
+    return finalizeReview({
+      expense,
+      deterministic,
+      llmVerdict,
+      llmFindings: sanitizeFindings(parsed.findings),
+      llmReimbursableAmountUsd: parsed.reimbursable_amount_usd,
+      llmSummary: parsed.summary,
+      modelName,
+    });
+  } catch (error) {
+    console.error("[review-expense] AI review failed, falling back:", error);
+    return finalizeReview({
+      expense,
+      deterministic,
+      llmVerdict: deterministic.deterministicVerdict,
+      llmFindings: [],
+      llmReimbursableAmountUsd: deterministic.suggestedReimbursableAmountUsd,
+      llmSummary: `Deterministic Halcyon v3.2 fallback for ${expense.expense_id} (${deterministic.deterministicVerdict}).`,
+      modelName: "deterministic-fallback",
+    });
+  }
 }

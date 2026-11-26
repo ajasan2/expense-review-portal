@@ -1,4 +1,4 @@
-// src/app/api/expenses/[id]/decision/route.ts: Approve or reject an expense
+// Approve or reject an expense
 
 import { NextResponse } from "next/server";
 import { z } from "zod";

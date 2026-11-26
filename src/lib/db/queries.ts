@@ -1,4 +1,4 @@
-// src/lib/db/queries.ts: Server-side database query helpers for employees, expenses, and reviews
+// Server-side database query helpers for employees, expenses, and reviews
 
 import { sql } from "@/lib/db/client";
 import type {

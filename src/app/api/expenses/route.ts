@@ -1,8 +1,8 @@
-// Create expenses and trigger initial policy + Gemini review
+// Create expenses and trigger initial policy + AI review
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { reviewExpenseWithGemini } from "@/lib/llm";
+import { reviewExpenseWithAi } from "@/lib/llm";
 import {
   getEmployeeById,
   insertExpense,
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
       decision_comment: null,
     });
 
-    const generated = await reviewExpenseWithGemini({ expense, employee });
+    const generated = await reviewExpenseWithAi({ expense, employee });
     const review = await upsertExpenseReview(generated);
 
     return NextResponse.json({ expense, review }, { status: 201 });

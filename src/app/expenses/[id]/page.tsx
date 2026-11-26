@@ -129,7 +129,7 @@ async function ExpenseDetailContent({
       <section className="space-y-3 rounded-lg border p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold">
-            Policy &amp; Gemini Audit Review
+            Policy &amp; AI Audit Review
           </h2>
           {review && (
             <span className="rounded bg-neutral-100 px-2.5 py-1 text-xs font-medium uppercase">

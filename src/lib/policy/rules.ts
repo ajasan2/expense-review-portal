@@ -1,4 +1,4 @@
-// src/lib/policy/rules.ts: Deterministic policy checks for Halcyon Expense & Reimbursement Policy v3.2
+// Deterministic policy checks for Halcyon Expense & Reimbursement Policy v3.2
 
 import type {
   Employee,

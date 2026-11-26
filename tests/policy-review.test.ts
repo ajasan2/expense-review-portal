@@ -1,7 +1,7 @@
-// tests/policy-review.test.ts: Unit tests for Halcyon policy evaluation and Gemini review service
+// Unit tests for Halcyon policy evaluation and llm review service
 
 import { describe, expect, it } from "vitest";
-import { reviewExpenseWithGemini, type GeminiClientLike } from "@/lib/llm";
+import { reviewExpenseWithAi, type AiClientLike } from "@/lib/llm";
 import { evaluateDeterministicPolicy, getCityRates } from "@/lib/policy";
 import type { Employee, Expense } from "@/types/expense";
 
@@ -181,28 +181,36 @@ describe("Halcyon policy rules (v3.2)", () => {
     expect(uberBlack.suggestedReimbursableAmountUsd).toBe(0);
   });
 
-  it("merges Gemini structured output without allowing an optimistic override of a policy violation", async () => {
-    const mockClient: GeminiClientLike = {
-      models: {
-        generateContent: async () => ({
-          text: JSON.stringify({
-            verdict: "compliant",
-            reimbursable_amount_usd: 240,
-            summary: "Looks good overall.",
-            findings: [
+  it("merges AI structured output without allowing an optimistic override of a policy violation", async () => {
+    const mockClient: AiClientLike = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
               {
-                section: "6.2",
-                rule_title: "Lodging nightly cap note",
-                status: "needs_review",
-                detail: "Confirm hotel tax breakdown on receipt.",
+                message: {
+                  content: JSON.stringify({
+                    verdict: "compliant",
+                    reimbursable_amount_usd: 240,
+                    summary: "Looks good overall.",
+                    findings: [
+                      {
+                        section: "6.2",
+                        rule_title: "Lodging nightly cap note",
+                        status: "needs_review",
+                        detail: "Confirm hotel tax breakdown on receipt.",
+                      },
+                    ],
+                  }),
+                },
               },
             ],
           }),
-        }),
+        },
       },
     };
 
-    const review = await reviewExpenseWithGemini({
+    const review = await reviewExpenseWithAi({
       expense: makeExpense({
         category: "Lodging",
         city: "Chicago",
