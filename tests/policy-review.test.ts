@@ -1,6 +1,6 @@
 // Unit tests for Halcyon policy evaluation and llm review service
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { reviewExpenseWithAi, type AiClientLike } from "@/lib/llm";
 import { evaluateDeterministicPolicy, getCityRates } from "@/lib/policy";
 import type { Employee, Expense } from "@/types/expense";
@@ -45,6 +45,11 @@ function makeExpense(overrides: Partial<Expense> = {}): Expense {
 }
 
 describe("Halcyon policy rules (v3.2)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
   it("resolves city tiers and caps accurately", () => {
     expect(getCityRates("New York")).toEqual({
       tier: "tier_1",
@@ -224,5 +229,192 @@ describe("Halcyon policy rules (v3.2)", () => {
     expect(review.verdict).toBe("policy_violation");
     expect(review.reimbursable_amount_usd).toBe(200);
     expect(review.findings.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("escalates verdict when deterministic rules pass but AI flags a violation or review", async () => {
+    const compliantExpense = makeExpense({
+      expense_id: "EXP-101",
+      amount_usd: 20,
+      receipt_attached: false,
+      description: "Team lunch during sprint planning",
+    });
+
+    const violationClient: AiClientLike = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    verdict: "policy_violation",
+                    reimbursable_amount_usd: 0,
+                    summary: "Unlisted alcohol purchase found on itemized slip.",
+                    findings: [
+                      {
+                        section: "4.3",
+                        rule_title: "Alcohol prohibition",
+                        status: "policy_violation",
+                        detail: "Alcohol is not reimbursable under policy.",
+                        reimbursable_amount_usd: 0,
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    const review = await reviewExpenseWithAi({
+      expense: compliantExpense,
+      employee: makeEmployee(),
+      client: violationClient,
+    });
+
+    expect(review.verdict).toBe("policy_violation");
+    expect(
+      review.findings.some((f) => f.rule_title === "Alcohol prohibition")
+    ).toBe(true);
+  });
+
+  it("deduplicates matching findings, filters empty details, and clamps reimbursable amounts", async () => {
+    const mockClient: AiClientLike = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  content: `Here is the evaluation:\n\`\`\`json\n${JSON.stringify({
+                    verdict: "needs_review",
+                    reimbursable_amount_usd: 999.999,
+                    summary: "  Fenced JSON response with extra findings.  ",
+                    findings: [
+                      {
+                        section: "5.1",
+                        rule_title: "Airfare cabin check",
+                        status: "invalid_status",
+                        detail: "Economy cabin verified.",
+                        reimbursable_amount_usd: Number.NaN,
+                      },
+                      {
+                        section: "5.1",
+                        rule_title: "AIRFARE CABIN CHECK",
+                        status: "needs_review",
+                        detail: "Duplicate LLM finding with same section and title.",
+                        reimbursable_amount_usd: 20,
+                      },
+                      {
+                        section: "5.2",
+                        rule_title: "Empty detail finding",
+                        status: "needs_review",
+                        detail: "   ",
+                      },
+                    ],
+                  })}\n\`\`\``,
+                },
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    const review = await reviewExpenseWithAi({
+      expense: makeExpense({
+        expense_id: "EXP-102",
+        amount_usd: 45,
+        receipt_attached: false,
+      }),
+      employee: makeEmployee(),
+      client: mockClient,
+    });
+
+    const cabinFindings = review.findings.filter(
+      (f) => f.section === "5.1" && f.rule_title === "Airfare cabin check"
+    );
+    expect(cabinFindings).toHaveLength(1);
+    expect(cabinFindings[0]?.status).toBe("needs_review");
+    expect(cabinFindings[0]?.reimbursable_amount_usd).toBeNull();
+    expect(
+      review.findings.some((f) => f.rule_title === "Empty detail finding")
+    ).toBe(false);
+    expect(review.reimbursable_amount_usd).toBe(45);
+    expect(review.summary).toBe("Fenced JSON response with extra findings.");
+  });
+
+  it("surfaces AI errors and missing config while keeping deterministic policy results", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const badJsonClient: AiClientLike = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { content: "{not valid json" } }],
+          }),
+        },
+      },
+    };
+
+    const malformedReview = await reviewExpenseWithAi({
+      expense: makeExpense({ expense_id: "EXP-103", amount_usd: 20 }),
+      employee: makeEmployee(),
+      client: badJsonClient,
+    });
+
+    expect(malformedReview.verdict).toBe("needs_review");
+    expect(malformedReview.reimbursable_amount_usd).toBe(20);
+    expect(malformedReview.summary).toContain("could not be parsed as JSON");
+    expect(
+      malformedReview.findings.some((f) => f.rule_title === "Malformed AI Response")
+    ).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+
+    const throwingClient: AiClientLike = {
+      chat: {
+        completions: {
+          create: async () => {
+            throw new Error("Network timeout");
+          },
+        },
+      },
+    };
+
+    const thrownReview = await reviewExpenseWithAi({
+      expense: makeExpense({ expense_id: "EXP-104", amount_usd: 20 }),
+      employee: makeEmployee(),
+      client: throwingClient,
+    });
+
+    expect(thrownReview.model_name).toBe("deterministic-fallback");
+    expect(thrownReview.verdict).toBe("needs_review");
+    expect(thrownReview.reimbursable_amount_usd).toBe(20);
+    expect(thrownReview.summary).toContain("Network timeout");
+    expect(
+      thrownReview.findings.some(
+        (f) => f.rule_title === "AI Policy Review Fallback"
+      )
+    ).toBe(true);
+    expect(errorSpy).toHaveBeenCalled();
+
+    vi.stubEnv("GROQ_API_KEY", "");
+    const missingKeyReview = await reviewExpenseWithAi({
+      expense: makeExpense({ expense_id: "EXP-105", amount_usd: 20 }),
+      employee: makeEmployee(),
+    });
+
+    expect(missingKeyReview.model_name).toBe("deterministic-fallback");
+    expect(missingKeyReview.verdict).toBe("needs_review");
+    expect(missingKeyReview.reimbursable_amount_usd).toBe(20);
+    expect(missingKeyReview.summary).toContain("GROQ_API_KEY missing");
+    expect(
+      missingKeyReview.findings.some(
+        (f) => f.rule_title === "AI Policy Review Unavailable"
+      )
+    ).toBe(true);
   });
 });

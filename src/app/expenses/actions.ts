@@ -1,7 +1,3 @@
-// Session-authenticated Server Actions with server-side permission checks
-
-"use server";
-
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireCurrentEmployee } from "@/lib/auth/session";
@@ -17,7 +13,7 @@ import type { Expense, ExpenseReview } from "@/types/expense";
 
 const createExpenseSchema = z.object({
   expense_date: z.string().min(1),
-  submitted_date: z.string().min(1),
+  submitted_date: z.string().optional(),
   category: z.string().min(1),
   merchant: z.string().min(1),
   amount_usd: z.coerce.number().positive(),
@@ -54,8 +50,11 @@ export async function createExpenseAction(rawInput: unknown): Promise<{
     };
   }
 
+  const submittedDate = new Date().toISOString().slice(0, 10);
+
   const expense = await insertExpense({
     ...parsed.data,
+    submitted_date: submittedDate,
     employee_id: actor.employee_id,
     attendees: parsed.data.attendees ?? null,
     status: "pending",
@@ -141,12 +140,17 @@ export async function decideExpenseAction(rawInput: unknown): Promise<{
     };
   }
 
+  const normalizedComment =
+    parsed.data.decision_comment && parsed.data.decision_comment.trim().length > 0
+      ? parsed.data.decision_comment.trim()
+      : null;
+
   await updateExpenseStatus({
     expense_id: parsed.data.expense_id,
     approver_id: actor.employee_id,
     status: parsed.data.status,
     decided_date: new Date().toISOString().slice(0, 10),
-    decision_comment: parsed.data.decision_comment ?? null,
+    decision_comment: normalizedComment,
   });
 
   revalidatePath("/expenses");

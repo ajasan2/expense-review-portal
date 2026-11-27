@@ -1,4 +1,4 @@
-// src/app/layout.tsx: Root layout with session status and production-gated demo switcher
+// Root layout with session status and production-gated demo switcher
 
 import { Suspense } from "react";
 import type { Metadata } from "next";
@@ -58,6 +58,7 @@ async function SessionBar() {
                 Demo Switch:
               </label>
               <select
+                key={currentUser?.employee_id ?? "signed-out"}
                 id="layout-demo-user"
                 name="employee_id"
                 defaultValue={currentUser?.employee_id ?? employees[0].employee_id}

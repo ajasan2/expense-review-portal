@@ -1,5 +1,6 @@
 // Approve or reject an expense
 
+import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentEmployee } from "@/lib/auth/session";
@@ -51,13 +52,22 @@ export async function POST(
       );
     }
 
+    const normalizedComment =
+      parsed.data.decision_comment && parsed.data.decision_comment.trim().length > 0
+        ? parsed.data.decision_comment.trim()
+        : null;
+
     const updated = await updateExpenseStatus({
       expense_id: id,
       approver_id: actor.employee_id,
       status: parsed.data.status,
       decided_date: new Date().toISOString().slice(0, 10),
-      decision_comment: parsed.data.decision_comment,
+      decision_comment: normalizedComment,
     });
+
+    revalidatePath("/expenses");
+    revalidatePath("/manager");
+    revalidatePath(`/expenses/${id}`);
 
     return NextResponse.json({ expense: updated });
   } catch (err) {

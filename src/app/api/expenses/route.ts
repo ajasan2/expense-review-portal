@@ -8,7 +8,7 @@ import { insertExpense, upsertExpenseReview } from "@/lib/db/queries";
 
 const postExpenseSchema = z.object({
   expense_date: z.string().min(1),
-  submitted_date: z.string().min(1),
+  submitted_date: z.string().optional(),
   category: z.string().min(1),
   merchant: z.string().min(1),
   amount_usd: z.coerce.number().positive(),
@@ -38,8 +38,11 @@ export async function POST(request: Request) {
       );
     }
 
+    const submittedDate = new Date().toISOString().slice(0, 10);
+
     const expense = await insertExpense({
       ...parsed.data,
+      submitted_date: submittedDate,
       employee_id: actor.employee_id,
       status: "pending",
       approver_id: actor.manager_id,

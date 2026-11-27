@@ -1,4 +1,4 @@
-// src/app/page.tsx: Employee sign-in screen setting the signed session cookie
+// Employee sign-in screen setting the signed session cookie
 
 import { Suspense } from "react";
 import Link from "next/link";

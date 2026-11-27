@@ -1,4 +1,4 @@
-// src/app/expenses/page.tsx: Session-authenticated expense submission and personal list
+// Session-authenticated expense submission and personal list
 
 import { Suspense } from "react";
 import Link from "next/link";
@@ -20,8 +20,8 @@ async function ExpensesContent() {
 
   async function handleSubmitExpense(formData: FormData) {
     "use server";
+    const submittedDate = new Date().toISOString().slice(0, 10);
     const expenseDate = String(formData.get("expense_date") ?? "");
-    const submittedDate = String(formData.get("submitted_date") ?? todayIso);
     const category = String(formData.get("category") ?? "");
     const merchant = String(formData.get("merchant") ?? "");
     const amountRaw = String(formData.get("amount_usd") ?? "0");
@@ -126,26 +126,13 @@ async function ExpensesContent() {
             />
           </div>
 
-          <div>
+          <div className="sm:col-span-2">
             <label className="block text-xs font-medium uppercase text-neutral-600">
               Expense Date
             </label>
             <input
               type="date"
               name="expense_date"
-              defaultValue={todayIso}
-              required
-              className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium uppercase text-neutral-600">
-              Submitted Date
-            </label>
-            <input
-              type="date"
-              name="submitted_date"
               defaultValue={todayIso}
               required
               className="mt-1 w-full rounded-md border px-3 py-2 text-sm"

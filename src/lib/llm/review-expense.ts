@@ -240,16 +240,26 @@ export async function reviewExpenseWithAi({
   const deterministic = evaluateDeterministicPolicy(expense, employee);
   const apiKey = process.env.GROQ_API_KEY;
 
-  // Fall back cleanly to deterministic policy findings if no Groq key is configured
   if (!client && !apiKey) {
-    console.warn("[review-expense] GROQ_API_KEY is missing; using deterministic fallback.");
+    console.warn(
+      "[review-expense] GROQ_API_KEY is missing; using deterministic fallback."
+    );
+    const missingKeyFinding: PolicyFinding = {
+      section: "System / AI Review",
+      rule_title: "AI Policy Review Unavailable",
+      status: "needs_review",
+      detail:
+        "GROQ_API_KEY is not configured. Only deterministic Halcyon v3.2 policy checks were evaluated.",
+      reimbursable_amount_usd: null,
+    };
+
     return finalizeReview({
       expense,
       deterministic,
-      llmVerdict: deterministic.deterministicVerdict,
-      llmFindings: [],
+      llmVerdict: "needs_review",
+      llmFindings: [missingKeyFinding],
       llmReimbursableAmountUsd: deterministic.suggestedReimbursableAmountUsd,
-      llmSummary: `Deterministic Halcyon v3.2 review for ${expense.expense_id} (${deterministic.deterministicVerdict}).`,
+      llmSummary: `AI review skipped (GROQ_API_KEY missing); showing deterministic Halcyon v3.2 check only (${deterministic.deterministicVerdict}).`,
       modelName: "deterministic-fallback",
     });
   }
@@ -293,38 +303,75 @@ export async function reviewExpenseWithAi({
     });
 
     const rawText = completion.choices?.[0]?.message?.content ?? "{}";
-    const parsed = JSON.parse(extractJsonObject(rawText)) as {
+    const extractedJson = extractJsonObject(rawText);
+    const hadNoJsonObject = extractedJson === "{}" && rawText.trim() !== "{}";
+
+    if (hadNoJsonObject) {
+      console.warn(
+        "[review-expense] AI response did not contain a JSON object."
+      );
+    }
+
+    const parsed = JSON.parse(extractedJson) as {
       verdict?: ReviewVerdict;
       reimbursable_amount_usd?: number | null;
       summary?: string;
       findings?: unknown;
     };
 
-    const llmVerdict: ReviewVerdict =
-      parsed.verdict === "compliant" ||
-      parsed.verdict === "needs_review" ||
-      parsed.verdict === "policy_violation"
+    const extraFindings = sanitizeFindings(parsed.findings);
+    if (hadNoJsonObject) {
+      extraFindings.unshift({
+        section: "System / AI Review",
+        rule_title: "Malformed AI Response",
+        status: "needs_review",
+        detail:
+          "AI response did not return a valid JSON object. Deterministic policy checks were applied.",
+        reimbursable_amount_usd: null,
+      });
+    }
+
+    const llmVerdict: ReviewVerdict = hadNoJsonObject
+      ? "needs_review"
+      : parsed.verdict === "compliant" ||
+          parsed.verdict === "needs_review" ||
+          parsed.verdict === "policy_violation"
         ? parsed.verdict
         : deterministic.deterministicVerdict;
+
+    const summary = hadNoJsonObject
+      ? `AI response could not be parsed as JSON; showing deterministic Halcyon v3.2 check (${deterministic.deterministicVerdict}).`
+      : parsed.summary;
 
     return finalizeReview({
       expense,
       deterministic,
       llmVerdict,
-      llmFindings: sanitizeFindings(parsed.findings),
+      llmFindings: extraFindings,
       llmReimbursableAmountUsd: parsed.reimbursable_amount_usd,
-      llmSummary: parsed.summary,
+      llmSummary: summary,
       modelName,
     });
   } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown AI review error";
     console.error("[review-expense] AI review failed, falling back:", error);
+
+    const fallbackFinding: PolicyFinding = {
+      section: "System / AI Review",
+      rule_title: "AI Policy Review Fallback",
+      status: "needs_review",
+      detail: `Automated AI review failed (${errorMessage}). Only deterministic policy checks were evaluated.`,
+      reimbursable_amount_usd: null,
+    };
+
     return finalizeReview({
       expense,
       deterministic,
-      llmVerdict: deterministic.deterministicVerdict,
-      llmFindings: [],
+      llmVerdict: "needs_review",
+      llmFindings: [fallbackFinding],
       llmReimbursableAmountUsd: deterministic.suggestedReimbursableAmountUsd,
-      llmSummary: `Deterministic Halcyon v3.2 fallback for ${expense.expense_id} (${deterministic.deterministicVerdict}).`,
+      llmSummary: `AI review failed (${errorMessage}); showing deterministic Halcyon v3.2 evaluation only.`,
       modelName: "deterministic-fallback",
     });
   }

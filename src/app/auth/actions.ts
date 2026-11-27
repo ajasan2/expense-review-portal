@@ -1,4 +1,4 @@
-// src/app/auth/actions.ts: Session sign-in, sign-out, and production-gated demo switcher
+// Session sign-in, sign-out, and production-gated demo switcher
 
 "use server";
 
