@@ -1,16 +1,17 @@
 // Quick smoke test for queries.ts against Supabase
 import { config } from "dotenv";
+
 config({ path: ".env.local" });
 
-import { sql } from "../src/lib/db/client";
-import {
-  getEmployeeById,
-  listEmployees,
-  listExpensesForEmployee,
-  listPendingExpensesForApprover,
-} from "../src/lib/db/queries";
-
 async function main() {
+  const { sql } = await import("../src/lib/db/client");
+  const {
+    getEmployeeById,
+    listEmployees,
+    listExpensesForEmployee,
+    listPendingExpensesForApprover,
+  } = await import("../src/lib/db/queries");
+
   const employees = await listEmployees();
   console.log("Total employees:", employees.length);
   console.log("Sample YTD type:", typeof employees[0]?.home_office_spent_ytd_usd);
@@ -40,6 +41,7 @@ async function main() {
 
 main().catch(async (err) => {
   console.error(err);
+  const { sql } = await import("../src/lib/db/client");
   await sql.end();
   process.exit(1);
 });

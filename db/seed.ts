@@ -2,9 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { Pool } from "pg";
-import dotenv from "dotenv";
+import { config } from "dotenv";
+import type { Employee, Expense } from "../src/types/expense";
 
-dotenv.config({ path: ".env.local" });
+config({ path: ".env.local" });
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -150,6 +151,69 @@ async function seedExpenses(rows: ExpenseRow[]) {
   }
 }
 
+async function seedPendingReviews() {
+  if (process.argv.includes("--skip-ai")) {
+    console.log("Skipping AI review generation (--skip-ai passed).");
+    return;
+  }
+
+  const { reviewExpenseWithAi } = await import("../src/lib/llm");
+  const { upsertExpenseReview } = await import("../src/lib/db/queries");
+
+  const { rows: employees } = await pool.query<Employee>(
+    `SELECT
+       employee_id, full_name, email, department, job_title,
+       role, manager_id, location, hire_date::text AS hire_date,
+       home_office_spent_ytd_usd::float8 AS home_office_spent_ytd_usd
+     FROM employees`
+  );
+
+  const employeeById = new Map<string, Employee>(
+    employees.map((emp) => [emp.employee_id, emp])
+  );
+
+  const { rows: pendingExpenses } = await pool.query<Expense>(
+    `SELECT
+       expense_id, employee_id,
+       expense_date::text AS expense_date,
+       submitted_date::text AS submitted_date,
+       category, merchant,
+       amount_usd::float8 AS amount_usd,
+       city, receipt_attached, attendees, description,
+       status, approver_id,
+       decided_date::text AS decided_date,
+       decision_comment,
+       created_at::text AS created_at,
+       updated_at::text AS updated_at
+     FROM expenses
+     WHERE status = 'pending'
+     ORDER BY expense_id ASC`
+  );
+
+  let reviewedCount = 0;
+
+  for (const expense of pendingExpenses) {
+    const employee = employeeById.get(expense.employee_id);
+    if (!employee) {
+      console.warn(
+        `Skipping review for ${expense.expense_id}: missing employee ${expense.employee_id}`
+      );
+      continue;
+    }
+
+    const generated = await reviewExpenseWithAi({ expense, employee });
+    await upsertExpenseReview({
+      ...generated,
+      expense_id: expense.expense_id,
+    });
+    reviewedCount += 1;
+  }
+
+  console.log(
+    `Generated and stored AI policy reviews for ${reviewedCount}/${pendingExpenses.length} pending expenses.`
+  );
+}
+
 async function main() {
   const dataDir = path.resolve(process.cwd(), "data");
   const employees = readCsv<EmployeeRow>(path.join(dataDir, "employees.csv"));
@@ -157,8 +221,11 @@ async function main() {
 
   await seedEmployees(employees);
   await seedExpenses(expenses);
+  await seedPendingReviews();
 
-  console.log(`Seeded ${employees.length} employees and ${expenses.length} expenses.`);
+  console.log(
+    `Seeded ${employees.length} employees and ${expenses.length} expenses.`
+  );
 }
 
 main()
@@ -168,4 +235,6 @@ main()
   })
   .finally(async () => {
     await pool.end();
+    const { sql } = await import("../src/lib/db/client");
+    await sql.end();
   });
