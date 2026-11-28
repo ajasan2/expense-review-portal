@@ -74,6 +74,32 @@ describe("Halcyon policy rules (v3.2)", () => {
     expect(result.suggestedReimbursableAmountUsd).toBe(20);
   });
 
+  it("flags potential split billing and reports combined threshold requirements", () => {
+    const current = makeExpense({
+      expense_id: "EXP-201",
+      category: "Software",
+      merchant: "Acme Cloud",
+      amount_usd: 750,
+      receipt_attached: true,
+      description: "Annual license part 1",
+    });
+    const prior = makeExpense({
+      expense_id: "EXP-200",
+      category: "Software",
+      merchant: "Acme Cloud",
+      amount_usd: 700,
+      receipt_attached: true,
+      description: "Annual license part 2",
+    });
+
+    const result = evaluateDeterministicPolicy(current, makeEmployee(), [prior]);
+    expect(result.deterministicVerdict).toBe("policy_violation");
+    const splitFinding = result.findings.find((f) => f.section === "2.4");
+    expect(splitFinding).toBeDefined();
+    expect(splitFinding?.detail).toContain("$1450.00");
+    expect(splitFinding?.detail).toContain("EXP-200");
+  });
+
   it("flags expenses >= $25 missing a receipt for review", () => {
     const result = evaluateDeterministicPolicy(
       makeExpense({ amount_usd: 45, receipt_attached: false }),

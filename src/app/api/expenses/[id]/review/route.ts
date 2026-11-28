@@ -4,8 +4,10 @@ import { NextResponse } from "next/server";
 import { getCurrentEmployee } from "@/lib/auth/session";
 import { canRunExpenseReview, canViewExpense } from "@/lib/auth/permissions";
 import { reviewExpenseWithAi } from "@/lib/llm";
+import { evaluateDeterministicPolicy } from "@/lib/policy/rules";
 import {
   getExpenseWithContextById,
+  listRawExpensesByEmployee,
   upsertExpenseReview,
 } from "@/lib/db/queries";
 
@@ -39,11 +41,48 @@ export async function POST(
       );
     }
 
+    const employeeExpenses = await listRawExpensesByEmployee(
+      ctx.expense.employee_id
+    );
+    const relatedExpenses = employeeExpenses.filter(
+      (item) => item.expense_id !== ctx.expense.expense_id
+    );
+
+    const deterministic = evaluateDeterministicPolicy(
+      ctx.expense,
+      ctx.employee,
+      relatedExpenses
+    );
     const generated = await reviewExpenseWithAi({
       expense: ctx.expense,
       employee: ctx.employee,
     });
-    const saved = await upsertExpenseReview(generated);
+
+    const mergedFindings = [
+      ...deterministic.findings.filter((f) => f.section === "2.4"),
+      ...generated.findings,
+    ];
+    const verdict =
+      deterministic.deterministicVerdict === "policy_violation" ||
+      generated.verdict === "policy_violation"
+        ? "policy_violation"
+        : generated.verdict;
+    const reimbursableAmountUsd =
+      deterministic.suggestedReimbursableAmountUsd !== null &&
+      generated.reimbursable_amount_usd !== null
+        ? Math.min(
+            deterministic.suggestedReimbursableAmountUsd,
+            generated.reimbursable_amount_usd
+          )
+        : (deterministic.suggestedReimbursableAmountUsd ??
+          generated.reimbursable_amount_usd);
+
+    const saved = await upsertExpenseReview({
+      ...generated,
+      verdict,
+      findings: mergedFindings,
+      reimbursable_amount_usd: reimbursableAmountUsd,
+    });
 
     return NextResponse.json({ review: saved });
   } catch (err) {

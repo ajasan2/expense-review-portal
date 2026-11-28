@@ -35,9 +35,19 @@ export async function POST(
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
     }
 
-    if (!canDecideExpense(actor, ctx.expense, ctx.employee.manager_id)) {
+    if (
+      !canDecideExpense(
+        actor,
+        ctx.expense,
+        ctx.employee.manager_id,
+        ctx.employee.role
+      )
+    ) {
       return NextResponse.json(
-        { error: "Not authorized to approve or reject this expense" },
+        {
+          error:
+            "Not authorized to approve or reject this expense at its current stage",
+        },
         { status: 403 }
       );
     }
@@ -60,7 +70,8 @@ export async function POST(
     const updated = await updateExpenseStatus({
       expense_id: id,
       approver_id: actor.employee_id,
-      status: parsed.data.status,
+      actor_role: actor.role,
+      decision: parsed.data.status,
       decided_date: new Date().toISOString().slice(0, 10),
       decision_comment: normalizedComment,
     });

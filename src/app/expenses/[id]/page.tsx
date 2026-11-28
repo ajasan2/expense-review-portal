@@ -9,6 +9,10 @@ import {
   canRunExpenseReview,
   canViewExpense,
 } from "@/lib/auth/permissions";
+import {
+  formatApprovalStageLabel,
+  getCurrentApprovalStage,
+} from "@/lib/policy/approvals";
 import { getExpenseWithContextById } from "@/lib/db/queries";
 import { decideExpenseAction, runExpenseReviewAction } from "../actions";
 
@@ -29,7 +33,15 @@ async function ExpenseDetailContent({
     notFound();
   }
 
-  const { expense, employee, approver, review } = ctx;
+  const {
+    expense,
+    employee,
+    approver,
+    managerApprover,
+    directorApprover,
+    cfoApprover,
+    review,
+  } = ctx;
 
   if (!canViewExpense(actor, expense, employee.manager_id)) {
     return (
@@ -49,11 +61,17 @@ async function ExpenseDetailContent({
   }
 
   const isOwnExpense = actor.employee_id === expense.employee_id;
-  const allowedToDecide = canDecideExpense(actor, expense, employee.manager_id);
+  const allowedToDecide = canDecideExpense(
+    actor,
+    expense,
+    employee.manager_id,
+    employee.role
+  );
   const allowedToRunReview =
     !isOwnExpense &&
     canRunExpenseReview(actor) &&
     canViewExpense(actor, expense, employee.manager_id);
+  const currentStage = getCurrentApprovalStage(expense.status);
 
   async function handleRunReview() {
     "use server";
@@ -114,7 +132,14 @@ async function ExpenseDetailContent({
         </div>
         <div className="min-w-0">
           <div className="text-xs uppercase text-neutral-500">Status</div>
-          <div className="text-lg font-semibold capitalize">{expense.status}</div>
+          <div className="text-lg font-semibold capitalize">
+            {expense.status.replace("_", " ")}
+          </div>
+          {currentStage && (
+            <div className="text-xs text-neutral-500">
+              Awaiting: {formatApprovalStageLabel(currentStage)}
+            </div>
+          )}
         </div>
         <div className="min-w-0">
           <div className="text-xs uppercase text-neutral-500">
@@ -135,7 +160,7 @@ async function ExpenseDetailContent({
           </div>
         </div>
         <div className="min-w-0">
-          <div className="text-xs uppercase text-neutral-500">Approver</div>
+          <div className="text-xs uppercase text-neutral-500">Last Approver</div>
           <div className="break-words text-sm">
             {approver ? `${approver.full_name} (${approver.role})` : "Unassigned"}
           </div>
@@ -148,6 +173,44 @@ async function ExpenseDetailContent({
           <div className="min-w-0 sm:col-span-3">
             <div className="text-xs uppercase text-neutral-500">Attendees</div>
             <p className="mt-1 break-words text-sm">{expense.attendees}</p>
+          </div>
+        )}
+        {(expense.manager_approved_by ||
+          expense.director_approved_by ||
+          expense.cfo_approved_by) && (
+          <div className="min-w-0 border-t pt-3 sm:col-span-3">
+            <div className="text-xs uppercase text-neutral-500">
+              Stage Approval History
+            </div>
+            <div className="mt-1 space-y-1 text-xs text-neutral-700">
+              {expense.manager_approved_by && (
+                <div>
+                  Manager:{" "}
+                  {managerApprover?.full_name ?? expense.manager_approved_by}
+                  {expense.manager_approved_at
+                    ? ` (${expense.manager_approved_at})`
+                    : ""}
+                </div>
+              )}
+              {expense.director_approved_by && (
+                <div>
+                  Director:{" "}
+                  {directorApprover?.full_name ?? expense.director_approved_by}
+                  {expense.director_approved_at
+                    ? ` (${expense.director_approved_at})`
+                    : ""}
+                </div>
+              )}
+              {expense.cfo_approved_by && (
+                <div>
+                  CFO / Executive:{" "}
+                  {cfoApprover?.full_name ?? expense.cfo_approved_by}
+                  {expense.cfo_approved_at
+                    ? ` (${expense.cfo_approved_at})`
+                    : ""}
+                </div>
+              )}
+            </div>
           </div>
         )}
         {(expense.decision_comment || expense.decided_date) && (
@@ -237,7 +300,9 @@ async function ExpenseDetailContent({
 
       {allowedToDecide && (
         <section className="w-full min-w-0 space-y-3 rounded-lg border p-4">
-          <h2 className="text-lg font-semibold">Record Approval Decision</h2>
+          <h2 className="text-lg font-semibold">
+            Record Approval Decision ({formatApprovalStageLabel(currentStage)})
+          </h2>
           <p className="text-xs text-neutral-500">
             Acting as {actor.full_name} ({actor.role})
           </p>
@@ -263,7 +328,7 @@ async function ExpenseDetailContent({
                 value="approved"
                 className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800"
               >
-                Approve Expense
+                Approve Stage
               </button>
               <button
                 type="submit"

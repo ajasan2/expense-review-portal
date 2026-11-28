@@ -2,7 +2,12 @@
 
 export type EmployeeRole = "employee" | "manager" | "director" | "executive";
 
-export type ExpenseStatus = "pending" | "approved" | "rejected";
+export type ExpenseStatus =
+  | "pending"
+  | "pending_director"
+  | "pending_cfo"
+  | "approved"
+  | "rejected";
 
 export type ReviewVerdict = "compliant" | "needs_review" | "policy_violation";
 
@@ -35,6 +40,12 @@ export interface Expense {
   approver_id: string | null;
   decided_date: string | null;
   decision_comment: string | null;
+  manager_approved_by?: string | null;
+  manager_approved_at?: string | null;
+  director_approved_by?: string | null;
+  director_approved_at?: string | null;
+  cfo_approved_by?: string | null;
+  cfo_approved_at?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -12,6 +12,8 @@ import type {
 export const DEFAULT_AI_MODEL = "openai/gpt-oss-120b";
 const GROQ_CHAT_COMPLETIONS_URL =
   "https://api.groq.com/openai/v1/chat/completions";
+const MAX_RATE_LIMIT_RETRIES = 3;
+const MAX_RETRY_DELAY_MS = 15_000;
 
 export interface AiClientLike {
   chat: {
@@ -37,29 +39,84 @@ export interface ReviewExpenseInput {
 export interface GeneratedExpenseReview
   extends Omit<ExpenseReview, "id" | "reviewed_at"> {}
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterMs(
+  retryAfterHeader: string | null,
+  errText: string,
+  attempt: number
+): number {
+  const fallbackMs = Math.min(MAX_RETRY_DELAY_MS, 2_000 * 2 ** attempt);
+
+  if (retryAfterHeader) {
+    const seconds = Number(retryAfterHeader);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(seconds * 1_000) + 250);
+    }
+    const dateMs = Date.parse(retryAfterHeader);
+    if (!Number.isNaN(dateMs)) {
+      const diff = dateMs - Date.now();
+      if (diff > 0) {
+        return Math.min(MAX_RETRY_DELAY_MS, diff + 250);
+      }
+    }
+  }
+
+  const messageMatch = errText.match(/try again in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+  if (messageMatch) {
+    const parsedSeconds = Number(messageMatch[1]);
+    if (Number.isFinite(parsedSeconds) && parsedSeconds > 0) {
+      return Math.min(
+        MAX_RETRY_DELAY_MS,
+        Math.ceil(parsedSeconds * 1_000) + 250
+      );
+    }
+  }
+
+  return fallbackMs;
+}
+
 function createDefaultGroqClient(apiKey: string): AiClientLike {
   return {
     chat: {
       completions: {
         async create(body) {
-          const response = await fetch(GROQ_CHAT_COMPLETIONS_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            signal: AbortSignal.timeout(15_000),
-            body: JSON.stringify(body),
-          });
+          for (let attempt = 0; ; attempt++) {
+            const response = await fetch(GROQ_CHAT_COMPLETIONS_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${apiKey}`,
+              },
+              signal: AbortSignal.timeout(15_000),
+              body: JSON.stringify(body),
+            });
 
-          if (!response.ok) {
+            if (response.ok) {
+              return response.json();
+            }
+
             const errText = await response.text().catch(() => "");
+
+            if (response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+              const waitMs = parseRetryAfterMs(
+                response.headers.get("retry-after"),
+                errText,
+                attempt
+              );
+              console.warn(
+                `[review-expense] Rate limited (429); retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES}).`
+              );
+              await sleep(waitMs);
+              continue;
+            }
+
             throw new Error(
               `Groq API error (${response.status}): ${errText || response.statusText}`
             );
           }
-
-          return response.json();
         },
       },
     },

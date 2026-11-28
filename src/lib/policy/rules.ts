@@ -1,5 +1,6 @@
 // Deterministic policy checks for Halcyon Expense & Reimbursement Policy v3.2
 
+import { findPotentialSplitExpenses } from "@/lib/policy/split-billing";
 import type {
   Employee,
   Expense,
@@ -69,9 +70,20 @@ function parseAttendeeCount(attendees: string | null): number {
     .filter(Boolean).length;
 }
 
+function getApprovalRequirementLabel(amountUsd: number): string {
+  if (amountUsd > 5000) {
+    return "direct manager, director (VP), and CFO (Section 3.1)";
+  }
+  if (amountUsd > 1000) {
+    return "direct manager and director (VP) in reporting chain (Section 3.1)";
+  }
+  return "direct manager (Section 3.1)";
+}
+
 export function evaluateDeterministicPolicy(
   expense: Expense,
-  employee: Employee
+  employee: Employee,
+  relatedExpenses: Expense[] = []
 ): PolicyEvaluationResult {
   const findings: PolicyFinding[] = [];
   let maxReimbursable: number | null = expense.amount_usd;
@@ -85,6 +97,32 @@ export function evaluateDeterministicPolicy(
     maxReimbursable =
       maxReimbursable === null ? clamped : Math.min(maxReimbursable, clamped);
   };
+
+  // Section 2.4: Split billing check against related expenses
+  const splitMatch = findPotentialSplitExpenses(expense, relatedExpenses);
+  const combinedAmountUsd = Number(
+    (expense.amount_usd + splitMatch.combinedAmountUsd).toFixed(2)
+  );
+
+  if (splitMatch.matchedExpenses.length > 0) {
+    const matchedIds = splitMatch.matchedExpenses
+      .map((item) => item.expense_id)
+      .join(", ");
+    findings.push({
+      section: "2.4",
+      rule_title: "Potential split billing",
+      status: "policy_violation",
+      detail: `Matches ${splitMatch.matchedExpenses.length} related expense(s) (${matchedIds}) at ${expense.merchant}; combined total is $${combinedAmountUsd.toFixed(2)} and requires ${getApprovalRequirementLabel(combinedAmountUsd)}.`,
+    });
+  } else if (expense.amount_usd > 1000) {
+    // Section 3.1: Escalation note for higher-tier approval thresholds
+    findings.push({
+      section: "3.1",
+      rule_title: "Multi-tier approval threshold",
+      status: "needs_review",
+      detail: `Expense of $${expense.amount_usd.toFixed(2)} requires ${getApprovalRequirementLabel(expense.amount_usd)}.`,
+    });
+  }
 
   // Section 2.1: Submission deadline (30 days standard, 31-60 director approval, >60 non-reimbursable)
   const ageDays = daysBetween(expense.expense_date, expense.submitted_date);

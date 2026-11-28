@@ -7,6 +7,7 @@ import {
   canViewExpense,
   isApproverRole,
 } from "@/lib/auth/permissions";
+import { getNextExpenseStatusOnApproval } from "@/lib/policy/approvals";
 import type { Employee, ExpenseStatus } from "@/types/expense";
 
 function makeEmployee(overrides: Partial<Employee> = {}): Employee {
@@ -112,7 +113,13 @@ describe("permissions", () => {
   });
 
   it("allows viewing expenses regardless of approval status when authorized", () => {
-    const statuses: ExpenseStatus[] = ["pending", "approved", "rejected"];
+    const statuses: ExpenseStatus[] = [
+      "pending",
+      "pending_director",
+      "pending_cfo",
+      "approved",
+      "rejected",
+    ];
     for (const status of statuses) {
       const expenseWithStatus = { ...sampleExpense, status };
       expect(canViewExpense(employee, expenseWithStatus, "E002")).toBe(true);
@@ -126,42 +133,112 @@ describe("permissions", () => {
       canDecideExpense(
         manager,
         { employee_id: "E002", approver_id: "E002", status: "pending" },
-        "E001"
+        "E001",
+        "manager"
       )
     ).toBe(false);
     expect(
       canDecideExpense(
         director,
-        { employee_id: "E001", approver_id: "E000", status: "pending" },
-        "E000"
+        { employee_id: "E001", approver_id: "E000", status: "pending_director" },
+        "E000",
+        "director"
       )
     ).toBe(false);
     expect(
       canDecideExpense(
         executive,
-        { employee_id: "E000", approver_id: null, status: "pending" },
-        null
+        { employee_id: "E000", approver_id: null, status: "pending_cfo" },
+        null,
+        "executive"
       )
     ).toBe(false);
   });
 
   it("blocks non-approvers and unrelated managers from deciding expenses", () => {
-    expect(canDecideExpense(employee, sampleExpense, "E002")).toBe(false);
-    expect(canDecideExpense(peer, sampleExpense, "E002")).toBe(false);
-    expect(canDecideExpense(otherManager, sampleExpense, "E002")).toBe(false);
+    expect(canDecideExpense(employee, sampleExpense, "E002", "employee")).toBe(
+      false
+    );
+    expect(canDecideExpense(peer, sampleExpense, "E002", "employee")).toBe(
+      false
+    );
+    expect(
+      canDecideExpense(otherManager, sampleExpense, "E002", "employee")
+    ).toBe(false);
   });
 
-  it("allows authorized approvers to decide only pending expenses", () => {
-    expect(canDecideExpense(manager, sampleExpense, "E002")).toBe(true);
-    expect(canDecideExpense(director, sampleExpense, "E002")).toBe(true);
-    expect(canDecideExpense(executive, sampleExpense, "E002")).toBe(true);
+  it("enforces stage roles and transitions across approval tiers", () => {
+    expect(
+      canDecideExpense(
+        manager,
+        { ...sampleExpense, status: "pending_director" },
+        "E002",
+        "employee"
+      )
+    ).toBe(false);
+    expect(
+      canDecideExpense(
+        director,
+        { ...sampleExpense, status: "pending_director" },
+        "E002",
+        "employee"
+      )
+    ).toBe(true);
+    expect(
+      canDecideExpense(
+        director,
+        { ...sampleExpense, status: "pending_cfo" },
+        "E002",
+        "employee"
+      )
+    ).toBe(false);
+    expect(
+      canDecideExpense(
+        executive,
+        { ...sampleExpense, status: "pending_cfo" },
+        "E002",
+        "employee"
+      )
+    ).toBe(true);
+
+    expect(
+      getNextExpenseStatusOnApproval({
+        amountUsd: 2500,
+        currentStatus: "pending",
+        submitterRole: "employee",
+        directManagerRole: "manager",
+        actorRole: "manager",
+      })
+    ).toBe("pending_director");
+
+    expect(
+      getNextExpenseStatusOnApproval({
+        amountUsd: 6200,
+        currentStatus: "pending_director",
+        submitterRole: "employee",
+        directManagerRole: "manager",
+        actorRole: "director",
+      })
+    ).toBe("pending_cfo");
+  });
+
+  it("allows authorized approvers to decide only active approval stages", () => {
+    expect(canDecideExpense(manager, sampleExpense, "E002", "employee")).toBe(
+      true
+    );
+    expect(canDecideExpense(director, sampleExpense, "E002", "employee")).toBe(
+      true
+    );
+    expect(
+      canDecideExpense(executive, sampleExpense, "E002", "employee")
+    ).toBe(true);
 
     for (const status of ["approved", "rejected"] as const) {
       expect(
-        canDecideExpense(manager, { ...sampleExpense, status }, "E002")
+        canDecideExpense(manager, { ...sampleExpense, status }, "E002", "employee")
       ).toBe(false);
       expect(
-        canDecideExpense(director, { ...sampleExpense, status }, "E002")
+        canDecideExpense(director, { ...sampleExpense, status }, "E002", "employee")
       ).toBe(false);
     }
   });

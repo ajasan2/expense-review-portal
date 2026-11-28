@@ -1,11 +1,18 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireCurrentEmployee } from "@/lib/auth/session";
-import { canDecideExpense, canRunExpenseReview, canViewExpense } from "@/lib/auth/permissions";
+import {
+  canDecideExpense,
+  canRunExpenseReview,
+  canViewExpense,
+} from "@/lib/auth/permissions";
 import { reviewExpenseWithAi } from "@/lib/llm";
+import { evaluateDeterministicPolicy } from "@/lib/policy/rules";
+import { findPotentialSplitExpenses } from "@/lib/policy/split-billing";
 import {
   getExpenseWithContextById,
   insertExpense,
+  listRawExpensesByEmployee,
   updateExpenseStatus,
   upsertExpenseReview,
 } from "@/lib/db/queries";
@@ -63,8 +70,54 @@ export async function createExpenseAction(rawInput: unknown): Promise<{
     decision_comment: null,
   });
 
+  const employeeExpenses = await listRawExpensesByEmployee(actor.employee_id);
+  const relatedExpenses = employeeExpenses.filter(
+    (item) => item.expense_id !== expense.expense_id
+  );
+
+  const deterministic = evaluateDeterministicPolicy(expense, actor, relatedExpenses);
   const generated = await reviewExpenseWithAi({ expense, employee: actor });
-  const review = await upsertExpenseReview(generated);
+  const mergedFindings = [
+    ...deterministic.findings.filter((f) => f.section === "2.4"),
+    ...generated.findings,
+  ];
+  const verdict =
+    deterministic.deterministicVerdict === "policy_violation" ||
+    generated.verdict === "policy_violation"
+      ? "policy_violation"
+      : generated.verdict;
+
+  const review = await upsertExpenseReview({
+    ...generated,
+    verdict,
+    findings: mergedFindings,
+    reimbursable_amount_usd:
+      deterministic.suggestedReimbursableAmountUsd !== null &&
+      generated.reimbursable_amount_usd !== null
+        ? Math.min(
+            deterministic.suggestedReimbursableAmountUsd,
+            generated.reimbursable_amount_usd
+          )
+        : (deterministic.suggestedReimbursableAmountUsd ??
+          generated.reimbursable_amount_usd),
+  });
+
+  const splitMatch = findPotentialSplitExpenses(expense, relatedExpenses);
+  for (const prior of splitMatch.matchedExpenses) {
+    const othersForPrior = employeeExpenses.filter(
+      (item) => item.expense_id !== prior.expense_id
+    );
+    const priorEval = evaluateDeterministicPolicy(prior, actor, othersForPrior);
+    await upsertExpenseReview({
+      expense_id: prior.expense_id,
+      verdict: priorEval.deterministicVerdict,
+      findings: priorEval.findings,
+      reimbursable_amount_usd: priorEval.suggestedReimbursableAmountUsd,
+      summary: `Deterministic policy check updated for potential split billing (${priorEval.findings.length} finding(s)).`,
+      model_name: "deterministic-policy",
+    });
+    revalidatePath(`/expenses/${prior.expense_id}`);
+  }
 
   revalidatePath("/expenses");
   revalidatePath("/manager");
@@ -91,15 +144,53 @@ export async function runExpenseReviewAction(expenseId: string): Promise<{
   }
 
   const submitterManagerId = ctx.employee?.manager_id ?? null;
-  if (!canRunExpenseReview(actor) || !canViewExpense(actor, ctx.expense, submitterManagerId)) {
-    return { ok: false, error: "Only approvers can run or re-run policy reviews" };
+  if (
+    !canRunExpenseReview(actor) ||
+    !canViewExpense(actor, ctx.expense, submitterManagerId)
+  ) {
+    return {
+      ok: false,
+      error: "Only approvers can run or re-run policy reviews",
+    };
   }
 
+  const employeeExpenses = await listRawExpensesByEmployee(ctx.expense.employee_id);
+  const relatedExpenses = employeeExpenses.filter(
+    (item) => item.expense_id !== ctx.expense.expense_id
+  );
+  const deterministic = evaluateDeterministicPolicy(
+    ctx.expense,
+    ctx.employee,
+    relatedExpenses
+  );
   const generated = await reviewExpenseWithAi({
     expense: ctx.expense,
     employee: ctx.employee,
   });
-  const review = await upsertExpenseReview(generated);
+  const mergedFindings = [
+    ...deterministic.findings.filter((f) => f.section === "2.4"),
+    ...generated.findings,
+  ];
+  const verdict =
+    deterministic.deterministicVerdict === "policy_violation" ||
+    generated.verdict === "policy_violation"
+      ? "policy_violation"
+      : generated.verdict;
+
+  const review = await upsertExpenseReview({
+    ...generated,
+    verdict,
+    findings: mergedFindings,
+    reimbursable_amount_usd:
+      deterministic.suggestedReimbursableAmountUsd !== null &&
+      generated.reimbursable_amount_usd !== null
+        ? Math.min(
+            deterministic.suggestedReimbursableAmountUsd,
+            generated.reimbursable_amount_usd
+          )
+        : (deterministic.suggestedReimbursableAmountUsd ??
+          generated.reimbursable_amount_usd),
+  });
 
   revalidatePath("/expenses");
   revalidatePath("/manager");
@@ -133,10 +224,12 @@ export async function decideExpenseAction(rawInput: unknown): Promise<{
   }
 
   const submitterManagerId = ctx.employee?.manager_id ?? null;
-  if (!canDecideExpense(actor, ctx.expense, submitterManagerId)) {
+  if (
+    !canDecideExpense(actor, ctx.expense, submitterManagerId, ctx.employee?.role)
+  ) {
     return {
       ok: false,
-      error: "Not authorized to approve or reject this expense",
+      error: "Not authorized to approve or reject this expense at its current stage",
     };
   }
 
@@ -148,7 +241,8 @@ export async function decideExpenseAction(rawInput: unknown): Promise<{
   await updateExpenseStatus({
     expense_id: parsed.data.expense_id,
     approver_id: actor.employee_id,
-    status: parsed.data.status,
+    actor_role: actor.role,
+    decision: parsed.data.status,
     decided_date: new Date().toISOString().slice(0, 10),
     decision_comment: normalizedComment,
   });
